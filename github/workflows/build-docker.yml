@@ -1,0 +1,82 @@
+name: Build Jellyfin DL YTP Image
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # every day at 2:00 UTC
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Get latest Jellyfin tag
+        id: get_tag
+        run: |
+          set -e
+          # Fetch tags and sort by semver descending
+          LATEST_TAG=$(curl -s https://registry.hub.docker.com/v2/repositories/jellyfin/jellyfin/tags?page_size=100 \
+            | jq -r '.results[].name' \
+            | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?$' \
+            | sort -V \
+            | tail -n1)
+          echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
+          echo "Latest Jellyfin tag: $LATEST_TAG"
+
+      - name: Check if tag changed
+        id: check_tag
+        run: |
+          LAST_TAG_FILE="last_tag.txt"
+          if [ -f "$LAST_TAG_FILE" ]; then
+            LAST_TAG=$(cat "$LAST_TAG_FILE")
+          else
+            LAST_TAG=""
+          fi
+          echo "LAST_TAG=$LAST_TAG"
+          if [ "$LAST_TAG" = "$LATEST_TAG" ]; then
+            echo "No new Jellyfin version. Skipping build."
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "New version detected: $LATEST_TAG"
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build and push Docker image
+        if: steps.check_tag.outputs.changed == 'true'
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          tags: |
+            e1025735/jellyfin-yt-dlp:${{ env.LATEST_TAG }}
+            e1025735/jellyfin-yt-dlp:latest
+          cache-from: type=registry,ref=e1025735/jellyfin-yt-dlp:cache
+          cache-to: type=registry,ref=e1025735/jellyfin-yt-dlp:cache,mode=max
+
+      - name: Update last_tag.txt safely
+        run: |
+          LAST_TAG_FILE="last_tag.txt"
+          echo "${LATEST_TAG}" > "$LAST_TAG_FILE"
+          
+          # Configure Git
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          # Pull latest changes to avoid conflicts
+          git pull --rebase || true
+
+          git add "$LAST_TAG_FILE"
+          git commit -m "Update last_tag.txt to $LATEST_TAG" || echo "No changes to commit"
+          git push || echo "Push failed, possibly due to concurrent run"
