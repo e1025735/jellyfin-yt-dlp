@@ -69,6 +69,7 @@ jobs:
           cache-to: type=registry,ref=e1025735/jellyfin-yt-dlp:cache,mode=max
 
       - name: Update last_tag.txt safely
+        if: steps.check_tag.outputs.changed == 'true'
         run: |
           LAST_TAG_FILE="last_tag.txt"
           echo "${LATEST_TAG}" > "$LAST_TAG_FILE"
